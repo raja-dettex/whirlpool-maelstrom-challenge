@@ -4,7 +4,7 @@ use std::{fmt::format, io::{BufRead, StdoutLock, Write}};
 
 use anyhow::{bail, Context, Ok};
 use serde::{de::DeserializeOwned, Serialize, Deserialize};
-use whirlpool_malestorm_challenge::{Message , Body, Node, main_loop};
+use whirlpool_malestorm_challenge::{main_loop, Body, Event, Message, Node};
 
 
 #[derive(Serialize , Deserialize, Debug, Clone)]
@@ -16,10 +16,6 @@ pub enum Payload {
         #[serde(rename="id")] 
         guid : String
     },
-    Echo { echo : String},
-    EchoOk { echo : String },
-    Init {node_id : String, node_ids : Vec<String>},
-    InitOk
 }
 
 
@@ -34,49 +30,24 @@ pub struct UniqueIdsNode {
 
 impl Node<(), Payload> for UniqueIdsNode 
 { 
-    fn from_init(_state: (), init: whirlpool_malestorm_challenge::Init) -> anyhow::Result<Self> where Self:Sized {
+    fn from_init(_state: (), init: whirlpool_malestorm_challenge::Init , _tx_sender : std::sync::mpsc::Sender<Event<Payload, ()>>) -> anyhow::Result<Self> where Self:Sized {
       Ok(UniqueIdsNode{node : init.node_id, id: 1})  
     } 
-    fn step(&mut self, input : Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()>{ 
-        match input.body.payload {
-            Payload::Init { ref node_id, ref node_ids } => { 
-                eprintln!("Handling Init payload: node_id={}, node_ids={:?}", node_id, node_ids);
-                let reply = Message { 
-                    src: input.dst,
-                    dst: input.src,
-                    body : Body { id: Some(self.id), in_reply_to: input.body.id, payload: Payload::InitOk  }
-                };
-                serde_json::to_writer(&mut *output, &reply).context("failed to handle initOk")?;
-                output.write_all(b"\n").context("failed to write new line")?;
-                //output.flush().context("failed to flush output");
-                self.id += 1;
-                eprintln!("init response sent , state : {:?}", self);
-            },
-            Payload::Echo { echo } => { 
-                let reply = Message { 
-                    src: input.dst,
-                    dst: input.src,
-                    body : Body { id: Some(self.id), in_reply_to: input.body.id, payload: Payload::EchoOk { echo: "echo_ok".to_string() } }
-                };
-                serde_json::to_writer(&mut *output, &reply).context("failed to write echo message")?;
-                output.write_all(b"\n").context("failed to write new line")?; 
-                self.id += 1;
-                eprintln!("init response sent , state : {:?}", self);
-            },
+    fn step(&mut self, input : Event<Payload, ()>, output: &mut StdoutLock) -> anyhow::Result<()>{ 
+        let Event::Message(input_msg) = input else { 
+            panic!("event injection happened here");
+        };
+        let mut reply = input_msg.in_reply(Some(&mut self.id));
+        
+        match reply.body.payload {
             Payload::Generate {  } => { 
                 let guid = format!("{}-{}", self.node, self.id);
-                let reply = Message { 
-                    src: input.dst,
-                    dst: input.src,
-                    body : Body { id: Some(self.id), in_reply_to: input.body.id, payload: Payload::GenerateOk { guid  }  }
-                };
+                reply.body.payload = Payload::GenerateOk { guid };
                 serde_json::to_writer(&mut *output, &reply).context("failed to write echo message")?;
                 output.write_all(b"\n").context("failed to write new line")?; 
                 self.id += 1;
                 eprintln!("init response sent , state : {:?}", self);
             },
-            Payload::EchoOk { ref echo } => { eprintln!("Received EchoOk with echo: {}", echo); },
-            Payload::InitOk => bail!("init ok"),
             Payload::GenerateOk { .. } => {}
         
         }
@@ -88,5 +59,5 @@ impl Node<(), Payload> for UniqueIdsNode
 fn main() -> anyhow::Result<()> {
     eprintln!("node started");
     //let state = UniqueIdsNode { id : 0};
-    main_loop::<_, UniqueIdsNode, _>(()).context("failed")
+    main_loop::<_, UniqueIdsNode, _, _>(()).context("failed")
 }

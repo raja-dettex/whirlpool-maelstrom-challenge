@@ -29,7 +29,7 @@ use std::io::{BufRead, StdoutLock, Write};
 
 use anyhow::{Context, bail};
 use serde::{de::DeserializeOwned, Serialize, Deserialize};
-use whirlpool_malestorm_challenge::{Message , Body, Node, main_loop};
+use whirlpool_malestorm_challenge::{main_loop, Body, Event, Message, Node};
 
 
 #[derive(Serialize , Deserialize, Debug, Clone)]
@@ -53,11 +53,16 @@ pub struct EachNode {
 impl Node<(), Payload> for EachNode 
 { 
 
-    fn from_init(_state: (), _init: whirlpool_malestorm_challenge::Init) -> anyhow::Result<Self> where Self:Sized {
+    fn from_init(_state: (), _init: whirlpool_malestorm_challenge::Init, _tx_sender : std::sync::mpsc::Sender<Event<Payload, ()>>) -> anyhow::Result<Self> where Self:Sized {
         Ok(EachNode{id: 1})
     }
-    fn step(&mut self, input : Message<Payload>, output: &mut StdoutLock) -> anyhow::Result<()>{ 
-        match input.body.payload {
+    fn step(&mut self, input : Event<Payload, ()>, output: &mut StdoutLock) -> anyhow::Result<()>{ 
+        let Event::Message(input_msg) = input else { 
+            panic!("event injection happened here");
+        };
+        let mut reply = input_msg.in_reply(Some(&mut self.id));
+        
+        match reply.body.payload {
             // Payload::Init { ref node_id, ref node_ids } => { 
             //     eprintln!("Handling Init payload: node_id={}, node_ids={:?}", node_id, node_ids);
             //     let reply = Message { 
@@ -72,11 +77,7 @@ impl Node<(), Payload> for EachNode
             //     eprintln!("init response sent , state : {:?}", self);
             // },
             Payload::Echo { echo } => { 
-                let reply = Message { 
-                    src: input.dst,
-                    dst: input.src,
-                    body : Body { id: Some(self.id), in_reply_to: input.body.id, payload: Payload::EchoOk { echo: "echo_ok".to_string() } }
-                };
+                reply.body.payload = Payload::EchoOk { echo: "echo_ok".to_string() };
                 serde_json::to_writer(&mut *output, &reply).context("failed to write echo message")?;
                 output.write_all(b"\n").context("failed to write new line")?; 
                 self.id += 1;
@@ -95,5 +96,5 @@ impl Node<(), Payload> for EachNode
 fn main() -> anyhow::Result<()> {
     eprintln!("node started");
     let state = EachNode { id : 0};
-    main_loop::<_, EachNode, _>(()).context("failed")
+    main_loop::<_, EachNode, _, _>(()).context("failed")
 }
